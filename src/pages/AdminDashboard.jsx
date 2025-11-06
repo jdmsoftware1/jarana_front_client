@@ -15,7 +15,8 @@ import {
   FileText,
   Shield,
   Filter,
-  Download
+  Download,
+  Brain
 } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Footer from '../components/Footer';
@@ -83,14 +84,27 @@ const AdminDashboard = () => {
     return <Navigate to="/" replace />;
   }
 
-  const tabs = [
+  // Verificar si las utilidades de IA están habilitadas
+  const aiUtilsEnabled = import.meta.env.VITE_ENABLE_AI_UTILS === 'true';
+
+  // Construir tabs dinámicamente según feature flags
+  const baseTabs = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
     { id: 'employees', label: 'Empleados', icon: Users },
     { id: 'records', label: 'Registros', icon: Clock },
     { id: 'schedules', label: 'Horarios', icon: Calendar },
     { id: 'vacations', label: 'Vacaciones', icon: Shield },
     { id: 'weekly', label: 'Vista Semanal', icon: FileText },
+  ];
+
+  const aiTabs = aiUtilsEnabled ? [
     { id: 'ai-insights', label: 'IA Insights', icon: BarChart3 },
+    { id: 'ai-knowledge', label: 'Gestión IA', icon: Brain },
+  ] : [];
+
+  const tabs = [
+    ...baseTabs,
+    ...aiTabs,
     { id: 'settings', label: 'Configuración', icon: Settings }
   ];
 
@@ -192,7 +206,8 @@ const AdminDashboard = () => {
         {activeTab === 'schedules' && <SchedulesContent />}
         {activeTab === 'vacations' && <VacationsContent />}
         {activeTab === 'weekly' && <WeeklyViewContent />}
-        {activeTab === 'ai-insights' && <AIInsightsContent />}
+        {activeTab === 'ai-insights' && aiUtilsEnabled && <AIInsightsContent />}
+        {activeTab === 'ai-knowledge' && aiUtilsEnabled && <AIKnowledgeContent />}
         {activeTab === 'settings' && <SettingsContent />}
       </div>
       
@@ -2147,6 +2162,331 @@ const CreateVacationModal = ({ employees, onClose, onSuccess }) => {
           </div>
         </form>
       </div>
+    </div>
+  );
+};
+
+// AI Knowledge Management Content
+const AIKnowledgeContent = () => {
+  const [stats, setStats] = useState({ initialized: false, documentsCount: 0, sources: [] });
+  const [documents, setDocuments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [viewingDoc, setViewingDoc] = useState(null);
+  const [docContent, setDocContent] = useState('');
+  const [customInstructions, setCustomInstructions] = useState('');
+  const [savingInstructions, setSavingInstructions] = useState(false);
+
+  useEffect(() => {
+    fetchKnowledgeStats();
+    fetchCustomInstructions();
+  }, []);
+
+  const fetchKnowledgeStats = async () => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/knowledge-stats`);
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data);
+        setDocuments(data.sources || []);
+      }
+    } catch (error) {
+      console.error('Error fetching knowledge stats:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchCustomInstructions = async () => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/custom-instructions`);
+      if (response.ok) {
+        const data = await response.json();
+        setCustomInstructions(data.instructions || '');
+      }
+    } catch (error) {
+      console.error('Error fetching custom instructions:', error);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file && file.name.endsWith('.txt')) {
+      setSelectedFile(file);
+    } else {
+      alert('Solo se permiten archivos .txt');
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) return;
+
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('document', selectedFile);
+
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/upload-document`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        alert('Documento subido correctamente');
+        setSelectedFile(null);
+        await handleReloadKnowledge();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.error || 'No se pudo subir el documento'}`);
+      }
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      alert('Error al subir el documento');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleReloadKnowledge = async () => {
+    setLoading(true);
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/reload-knowledge`, {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        await fetchKnowledgeStats();
+        alert('Base de conocimiento recargada correctamente');
+      }
+    } catch (error) {
+      console.error('Error reloading knowledge:', error);
+      alert('Error al recargar la base de conocimiento');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleViewDocument = async (filename) => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/view-document/${filename}`);
+      if (response.ok) {
+        const data = await response.json();
+        setDocContent(data.content);
+        setViewingDoc(filename);
+      }
+    } catch (error) {
+      console.error('Error viewing document:', error);
+      alert('Error al ver el documento');
+    }
+  };
+
+  const handleDeleteDocument = async (filename) => {
+    if (!confirm(`¿Estás seguro de que quieres eliminar "${filename}"?`)) return;
+
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/delete-document/${filename}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        alert('Documento eliminado correctamente');
+        await handleReloadKnowledge();
+      }
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      alert('Error al eliminar el documento');
+    }
+  };
+
+  const handleSaveInstructions = async () => {
+    setSavingInstructions(true);
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/ai/custom-instructions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instructions: customInstructions }),
+      });
+
+      if (response.ok) {
+        alert('Instrucciones guardadas correctamente');
+        await handleReloadKnowledge();
+      }
+    } catch (error) {
+      console.error('Error saving instructions:', error);
+      alert('Error al guardar las instrucciones');
+    } finally {
+      setSavingInstructions(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-neutral-dark font-serif mb-2">
+          Gestión de Conocimiento IA
+        </h2>
+        <p className="text-brand-medium">
+          Administra los documentos de conocimiento que la IA utiliza para responder preguntas
+        </p>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+          <div className="flex items-center">
+            <div className={`${stats.initialized ? 'bg-green-500' : 'bg-gray-400'} rounded-lg p-3`}>
+              <Brain className="h-6 w-6 text-white" />
+            </div>
+            <div className="ml-4">
+              <p className="text-sm font-medium text-brand-medium">Estado del Sistema</p>
+              <p className="text-2xl font-semibold text-neutral-dark">
+                {stats.initialized ? 'Activo' : 'Inactivo'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+          <div className="flex items-center">
+            <div className="bg-blue-500 rounded-lg p-3">
+              <FileText className="h-6 w-6 text-white" />
+            </div>
+            <div className="ml-4">
+              <p className="text-sm font-medium text-brand-medium">Documentos Cargados</p>
+              <p className="text-2xl font-semibold text-neutral-dark">{stats.documentsCount}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+          <div className="flex items-center">
+            <div className="bg-purple-500 rounded-lg p-3">
+              <Download className="h-6 w-6 text-white" />
+            </div>
+            <div className="ml-4">
+              <p className="text-sm font-medium text-brand-medium">Archivos Fuente</p>
+              <p className="text-2xl font-semibold text-neutral-dark">{stats.sources.length}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Upload Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Subir Documento</h3>
+        <div className="flex items-center space-x-4">
+          <input
+            type="file"
+            accept=".txt"
+            onChange={handleFileSelect}
+            className="flex-1 px-3 py-2 border border-neutral-mid/30 rounded-lg"
+          />
+          <button
+            onClick={handleUpload}
+            disabled={!selectedFile || uploading}
+            className="px-6 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {uploading ? 'Subiendo...' : 'Subir'}
+          </button>
+        </div>
+        <p className="text-sm text-brand-medium mt-2">
+          Solo archivos .txt. El documento se procesará automáticamente.
+        </p>
+      </div>
+
+      {/* Documents List */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold text-neutral-dark">Documentos</h3>
+          <button
+            onClick={handleReloadKnowledge}
+            disabled={loading}
+            className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50"
+          >
+            {loading ? 'Recargando...' : 'Recargar'}
+          </button>
+        </div>
+
+        {documents.length === 0 ? (
+          <p className="text-brand-medium text-center py-8">
+            No hay documentos cargados. Sube un archivo .txt para comenzar.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {documents.map((doc, index) => (
+              <div
+                key={index}
+                className="flex items-center justify-between p-4 border border-neutral-mid/20 rounded-lg hover:bg-neutral-light/50"
+              >
+                <div className="flex items-center space-x-3">
+                  <FileText className="h-5 w-5 text-brand-medium" />
+                  <span className="text-neutral-dark font-medium">{doc}</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => handleViewDocument(doc)}
+                    className="p-2 text-brand-medium hover:text-brand-dark"
+                    title="Ver documento"
+                  >
+                    👁️
+                  </button>
+                  <button
+                    onClick={() => handleDeleteDocument(doc)}
+                    className="p-2 text-red-600 hover:text-red-800"
+                    title="Eliminar documento"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Custom Instructions */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Instrucciones Personalizadas</h3>
+        <textarea
+          value={customInstructions}
+          onChange={(e) => setCustomInstructions(e.target.value)}
+          className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          rows="6"
+          placeholder="Instrucciones adicionales para la IA..."
+        />
+        <button
+          onClick={handleSaveInstructions}
+          disabled={savingInstructions}
+          className="mt-4 px-6 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50"
+        >
+          {savingInstructions ? 'Guardando...' : 'Guardar Instrucciones'}
+        </button>
+      </div>
+
+      {/* Document Viewer Modal */}
+      {viewingDoc && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
+            <div className="p-6 border-b border-neutral-mid/20">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">{viewingDoc}</h3>
+                <button
+                  onClick={() => setViewingDoc(null)}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[60vh]">
+              <pre className="whitespace-pre-wrap text-sm text-neutral-dark font-mono">
+                {docContent}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

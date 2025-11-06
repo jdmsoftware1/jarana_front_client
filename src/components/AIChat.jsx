@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { MessageCircle, X, Send, Bot, User, Loader2 } from 'lucide-react';
 
-const getApiUrl = () => import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+const getApiUrl = () => {
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+  return `${baseUrl}/api`;
+};
 
 const AIChat = ({ userId, userRole = 'employee' }) => {
   const [isOpen, setIsOpen] = useState(false);
