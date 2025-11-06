@@ -92,7 +92,7 @@ const AdminDashboard = () => {
     { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
     { id: 'employees', label: 'Empleados', icon: Users },
     { id: 'records', label: 'Registros', icon: Clock },
-    { id: 'schedules', label: 'Horarios', icon: Calendar },
+    { id: 'weekly-schedules', label: 'Horarios Semanales', icon: Calendar },
     { id: 'vacations', label: 'Vacaciones', icon: Shield },
     { id: 'weekly', label: 'Vista Semanal', icon: FileText },
   ];
@@ -203,7 +203,7 @@ const AdminDashboard = () => {
         {activeTab === 'dashboard' && <DashboardContent />}
         {activeTab === 'employees' && <EmployeesContent />}
         {activeTab === 'records' && <RecordsContent />}
-        {activeTab === 'schedules' && <SchedulesContent />}
+        {activeTab === 'weekly-schedules' && <WeeklySchedulesContent />}
         {activeTab === 'vacations' && <VacationsContent />}
         {activeTab === 'weekly' && <WeeklyViewContent />}
         {activeTab === 'ai-insights' && aiUtilsEnabled && <AIInsightsContent />}
@@ -2488,6 +2488,1128 @@ const AIKnowledgeContent = () => {
         </div>
       )}
     </div>
+  );
+};
+
+// Weekly Schedules Content
+const WeeklySchedulesContent = () => {
+  const [employees, setEmployees] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [selectedWeek, setSelectedWeek] = useState(null);
+  const [weeklySchedules, setWeeklySchedules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showTemplateFormModal, setShowTemplateFormModal] = useState(false);
+  const [showCopyModal, setShowCopyModal] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [selectedEmployeesForCopy, setSelectedEmployeesForCopy] = useState([]);
+  const [assignData, setAssignData] = useState({
+    employeeId: '',
+    templateId: '',
+    year: new Date().getFullYear(),
+    weekNumber: 1
+  });
+  const [useWeekRange, setUseWeekRange] = useState(false);
+  const [weekRange, setWeekRange] = useState({
+    startDate: '',
+    endDate: ''
+  });
+
+  useEffect(() => {
+    fetchEmployees();
+    fetchTemplates();
+  }, []);
+
+  useEffect(() => {
+    if (selectedEmployee) {
+      fetchWeeklySchedules();
+    }
+  }, [selectedEmployee, selectedYear]);
+
+  const fetchEmployees = async () => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/employees`);
+      if (response.ok) {
+        const data = await response.json();
+        setEmployees(data.filter(e => e.isActive));
+      }
+    } catch (error) {
+      console.error('Error fetching employees:', error);
+    }
+  };
+
+  const fetchTemplates = async () => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/schedule-templates`);
+      if (response.ok) {
+        const result = await response.json();
+        const data = result.data || result;
+        setTemplates(Array.isArray(data) ? data.filter(t => t.isActive) : []);
+      }
+    } catch (error) {
+      console.error('Error fetching templates:', error);
+    }
+  };
+
+  const fetchWeeklySchedules = async () => {
+    if (!selectedEmployee) return;
+    
+    setLoading(true);
+    try {
+      const response = await authenticatedFetch(
+        `${getApiUrl()}/weekly-schedules/employee/${selectedEmployee}/year/${selectedYear}`
+      );
+      if (response.ok) {
+        const result = await response.json();
+        const data = result.data || result;
+        setWeeklySchedules(Array.isArray(data) ? data : []);
+      }
+    } catch (error) {
+      console.error('Error fetching weekly schedules:', error);
+      setWeeklySchedules([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteSchedule = async (scheduleId) => {
+    if (!confirm('¿Estás seguro de eliminar este horario semanal?')) return;
+    
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/weekly-schedules/${scheduleId}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        alert('Horario eliminado correctamente');
+        fetchWeeklySchedules();
+      }
+    } catch (error) {
+      console.error('Error deleting schedule:', error);
+      alert('Error al eliminar el horario');
+    }
+  };
+
+  const getWeekNumber = (date) => {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  };
+
+  const getWeeksInRange = (startDate, endDate) => {
+    const weeks = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    let current = new Date(start);
+    const seenWeeks = new Set();
+    
+    while (current <= end) {
+      const weekNum = getWeekNumber(current);
+      const year = current.getFullYear();
+      const weekKey = `${year}-${weekNum}`;
+      
+      if (!seenWeeks.has(weekKey)) {
+        seenWeeks.add(weekKey);
+        weeks.push({ year, weekNumber: weekNum });
+      }
+      
+      current.setDate(current.getDate() + 1);
+    }
+    
+    return weeks;
+  };
+
+  const handleAssignTemplate = async (e) => {
+    e.preventDefault();
+    
+    try {
+      let weeksToAssign = [];
+      
+      if (useWeekRange && weekRange.startDate && weekRange.endDate) {
+        weeksToAssign = getWeeksInRange(weekRange.startDate, weekRange.endDate);
+      } else {
+        weeksToAssign = [{ year: assignData.year, weekNumber: assignData.weekNumber }];
+      }
+      
+      if (weeksToAssign.length === 0) {
+        alert('No se encontraron semanas en el rango seleccionado');
+        return;
+      }
+      
+      const promises = weeksToAssign.map(week =>
+        authenticatedFetch(`${getApiUrl()}/weekly-schedules`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            employeeId: assignData.employeeId,
+            templateId: assignData.templateId,
+            year: week.year,
+            weekNumber: week.weekNumber
+          })
+        })
+      );
+      
+      await Promise.all(promises);
+      
+      alert(`Plantilla asignada correctamente a ${weeksToAssign.length} semana(s)`);
+      setShowAssignModal(false);
+      setUseWeekRange(false);
+      setWeekRange({ startDate: '', endDate: '' });
+      fetchWeeklySchedules();
+    } catch (error) {
+      console.error('Error assigning template:', error);
+      alert('Error al asignar plantilla');
+    }
+  };
+
+  const getWeekDateRange = (year, weekNumber) => {
+    const simple = new Date(year, 0, 1 + (weekNumber - 1) * 7);
+    const dow = simple.getDay();
+    const ISOweekStart = simple;
+    if (dow <= 4)
+      ISOweekStart.setDate(simple.getDate() - simple.getDay() + 1);
+    else
+      ISOweekStart.setDate(simple.getDate() + 8 - simple.getDay());
+    
+    const ISOweekEnd = new Date(ISOweekStart);
+    ISOweekEnd.setDate(ISOweekStart.getDate() + 6);
+    
+    const formatDate = (date) => {
+      const day = date.getDate().toString().padStart(2, '0');
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      return `${day}/${month}`;
+    };
+    
+    return `${formatDate(ISOweekStart)} - ${formatDate(ISOweekEnd)}`;
+  };
+
+  const currentWeek = getWeekNumber(new Date());
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-neutral-dark font-serif mb-2">
+            Horarios Semanales
+          </h2>
+          <p className="text-brand-medium">
+            Gestiona horarios semanales específicos para cada empleado
+          </p>
+        </div>
+        <button
+          onClick={() => setShowTemplateModal(true)}
+          className="px-4 py-2 bg-brand-medium text-brand-cream rounded-lg hover:bg-brand-dark transition-colors"
+        >
+          <Calendar className="h-5 w-5 inline mr-2" />
+          Gestionar Plantillas
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">
+              Empleado
+            </label>
+            <select
+              value={selectedEmployee || ''}
+              onChange={(e) => setSelectedEmployee(e.target.value)}
+              className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+            >
+              <option value="">Seleccionar empleado...</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.name} ({emp.employeeCode})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">
+              Año
+            </label>
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+              className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+            >
+              {[2024, 2025, 2026].map(year => (
+                <option key={year} value={year}>{year}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-end">
+            <button
+              onClick={() => setShowAssignModal(true)}
+              disabled={!selectedEmployee}
+              className="w-full px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Plus className="h-5 w-5 inline mr-2" />
+              Asignar Plantilla
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Weekly Schedules List */}
+      {selectedEmployee && (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-6">
+          <h3 className="text-lg font-semibold text-neutral-dark mb-4">
+            Horarios de {employees.find(e => e.id === selectedEmployee)?.name} - {selectedYear}
+          </h3>
+
+          {loading ? (
+            <div className="text-center py-8">
+              <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-brand-light"></div>
+            </div>
+          ) : weeklySchedules.length === 0 ? (
+            <p className="text-brand-medium text-center py-8">
+              No hay horarios semanales asignados para este empleado en {selectedYear}
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {weeklySchedules.map(schedule => (
+                <div
+                  key={schedule.id}
+                  className={`p-4 border rounded-lg ${
+                    schedule.weekNumber === currentWeek && schedule.year === new Date().getFullYear()
+                      ? 'border-brand-light bg-brand-light/5'
+                      : 'border-neutral-mid/20'
+                  }`}
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <Calendar className="h-5 w-5 text-brand-medium" />
+                        <span className="font-semibold text-neutral-dark">
+                          Semana {schedule.weekNumber} - {schedule.year}
+                        </span>
+                        <span className="text-sm text-brand-medium">
+                          ({getWeekDateRange(schedule.year, schedule.weekNumber)})
+                        </span>
+                        {schedule.weekNumber === currentWeek && schedule.year === new Date().getFullYear() && (
+                          <span className="px-2 py-1 bg-brand-light text-brand-cream text-xs rounded-full">
+                            Actual
+                          </span>
+                        )}
+                      </div>
+                      
+                      {schedule.template && (
+                        <div className="text-sm text-brand-medium">
+                          <strong>Plantilla:</strong> {schedule.template.name}
+                          {schedule.template.description && (
+                            <span className="ml-2">- {schedule.template.description}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {schedule.notes && (
+                        <div className="text-sm text-brand-medium mt-1">
+                          <strong>Notas:</strong> {schedule.notes}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => {
+                          setSelectedWeek(schedule);
+                          setShowCopyModal(true);
+                        }}
+                        className="p-2 text-blue-600 hover:text-blue-800"
+                        title="Copiar a otros empleados"
+                      >
+                        📋
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSchedule(schedule.id)}
+                        className="p-2 text-red-600 hover:text-red-800"
+                        title="Eliminar horario"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Assign Template Modal */}
+      {showAssignModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-neutral-mid/20">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">Asignar Plantilla Semanal</h3>
+                <button
+                  onClick={() => setShowAssignModal(false)}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleAssignTemplate} className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-neutral-dark mb-2">
+                  Empleado
+                </label>
+                <select
+                  value={assignData.employeeId}
+                  onChange={(e) => setAssignData({ ...assignData, employeeId: e.target.value })}
+                  className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                  required
+                >
+                  <option value="">Seleccionar...</option>
+                  {employees.map(emp => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.name} ({emp.employeeCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-dark mb-2">
+                  Plantilla
+                </label>
+                <select
+                  value={assignData.templateId}
+                  onChange={(e) => setAssignData({ ...assignData, templateId: e.target.value })}
+                  className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                  required
+                >
+                  <option value="">Seleccionar...</option>
+                  {templates.map(template => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="border-t border-neutral-mid/20 pt-4">
+                <div className="flex items-center justify-between mb-4">
+                  <label className="block text-sm font-medium text-neutral-dark">
+                    Modo de asignación
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setUseWeekRange(false)}
+                      className={`px-3 py-1 text-sm rounded ${
+                        !useWeekRange
+                          ? 'bg-brand-light text-brand-cream'
+                          : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                      }`}
+                    >
+                      Semana única
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseWeekRange(true)}
+                      className={`px-3 py-1 text-sm rounded ${
+                        useWeekRange
+                          ? 'bg-brand-light text-brand-cream'
+                          : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                      }`}
+                    >
+                      Rango de fechas
+                    </button>
+                  </div>
+                </div>
+
+                {!useWeekRange ? (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-neutral-dark mb-2">
+                        Año
+                      </label>
+                      <input
+                        type="number"
+                        value={assignData.year}
+                        onChange={(e) => setAssignData({ ...assignData, year: parseInt(e.target.value) })}
+                        className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                        min="2024"
+                        max="2030"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-neutral-dark mb-2">
+                        Semana
+                      </label>
+                      <input
+                        type="number"
+                        value={assignData.weekNumber}
+                        onChange={(e) => setAssignData({ ...assignData, weekNumber: parseInt(e.target.value) })}
+                        className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                        min="1"
+                        max="53"
+                        required
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-neutral-dark mb-2">
+                          Fecha inicio
+                        </label>
+                        <input
+                          type="date"
+                          value={weekRange.startDate}
+                          onChange={(e) => setWeekRange({ ...weekRange, startDate: e.target.value })}
+                          className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                          required={useWeekRange}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-neutral-dark mb-2">
+                          Fecha fin
+                        </label>
+                        <input
+                          type="date"
+                          value={weekRange.endDate}
+                          onChange={(e) => setWeekRange({ ...weekRange, endDate: e.target.value })}
+                          className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+                          min={weekRange.startDate}
+                          required={useWeekRange}
+                        />
+                      </div>
+                    </div>
+                    
+                    {weekRange.startDate && weekRange.endDate && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <p className="text-sm text-blue-800">
+                          <strong>Semanas a asignar:</strong> {getWeeksInRange(weekRange.startDate, weekRange.endDate).length}
+                        </p>
+                        <div className="mt-2 text-xs text-blue-700 max-h-32 overflow-y-auto">
+                          {getWeeksInRange(weekRange.startDate, weekRange.endDate).map((week, idx) => (
+                            <span key={idx} className="inline-block mr-2 mb-1 px-2 py-1 bg-blue-100 rounded">
+                              Sem {week.weekNumber}/{week.year}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAssignModal(false)}
+                  className="px-4 py-2 text-brand-medium hover:text-neutral-dark"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium"
+                >
+                  Asignar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Copy Schedule to Multiple Employees Modal */}
+      {showCopyModal && selectedWeek && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+            <div className="p-6 border-b border-neutral-mid/20">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">Copiar Horario Semanal</h3>
+                <button
+                  onClick={() => {
+                    setShowCopyModal(false);
+                    setSelectedEmployeesForCopy([]);
+                  }}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+                <p className="text-sm text-blue-800">
+                  <strong>Horario a copiar:</strong> Semana {selectedWeek.weekNumber} - {selectedWeek.year}
+                  {selectedWeek.template && (
+                    <span className="block mt-1">Plantilla: {selectedWeek.template.name}</span>
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-neutral-dark mb-2">
+                  Seleccionar empleados
+                </label>
+                <div className="max-h-64 overflow-y-auto border border-neutral-mid/30 rounded-lg p-3 space-y-2">
+                  {employees
+                    .filter(emp => emp.id !== selectedEmployee)
+                    .map(emp => (
+                      <label key={emp.id} className="flex items-center space-x-2 p-2 hover:bg-neutral-light/50 rounded cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedEmployeesForCopy.includes(emp.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedEmployeesForCopy([...selectedEmployeesForCopy, emp.id]);
+                            } else {
+                              setSelectedEmployeesForCopy(selectedEmployeesForCopy.filter(id => id !== emp.id));
+                            }
+                          }}
+                          className="rounded border-neutral-mid/30"
+                        />
+                        <span className="text-sm text-neutral-dark">
+                          {emp.name} ({emp.employeeCode})
+                        </span>
+                      </label>
+                    ))}
+                </div>
+                <p className="text-xs text-brand-medium mt-2">
+                  {selectedEmployeesForCopy.length} empleado(s) seleccionado(s)
+                </p>
+              </div>
+
+              <div className="flex justify-end space-x-3 pt-4 border-t border-neutral-mid/20">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCopyModal(false);
+                    setSelectedEmployeesForCopy([]);
+                  }}
+                  className="px-4 py-2 text-brand-medium hover:text-neutral-dark"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={async () => {
+                    if (selectedEmployeesForCopy.length === 0) {
+                      alert('Selecciona al menos un empleado');
+                      return;
+                    }
+
+                    try {
+                      const promises = selectedEmployeesForCopy.map(employeeId =>
+                        authenticatedFetch(`${getApiUrl()}/weekly-schedules`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            employeeId,
+                            templateId: selectedWeek.templateId,
+                            year: selectedWeek.year,
+                            weekNumber: selectedWeek.weekNumber,
+                            notes: selectedWeek.notes
+                          })
+                        })
+                      );
+
+                      await Promise.all(promises);
+                      alert(`Horario copiado a ${selectedEmployeesForCopy.length} empleado(s)`);
+                      setShowCopyModal(false);
+                      setSelectedEmployeesForCopy([]);
+                      fetchWeeklySchedules();
+                    } catch (error) {
+                      console.error('Error copying schedule:', error);
+                      alert('Error al copiar horario');
+                    }
+                  }}
+                  disabled={selectedEmployeesForCopy.length === 0}
+                  className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Copiar a {selectedEmployeesForCopy.length} empleado(s)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Management Modal */}
+      {showTemplateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-neutral-mid/20 sticky top-0 bg-white">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">Gestión de Plantillas</h3>
+                <button
+                  onClick={() => setShowTemplateModal(false)}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <p className="text-brand-medium">Plantillas de horarios disponibles</p>
+                <button
+                  onClick={() => {
+                    setSelectedTemplate(null);
+                    setShowTemplateFormModal(true);
+                  }}
+                  className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium"
+                >
+                  <Plus className="h-4 w-4 inline mr-2" />
+                  Nueva Plantilla
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {templates.map(template => (
+                  <div
+                    key={template.id}
+                    className="border border-neutral-mid/20 rounded-lg p-4 hover:shadow-md transition-shadow"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <h4 className="font-semibold text-neutral-dark">{template.name}</h4>
+                        {template.description && (
+                          <p className="text-sm text-brand-medium mt-1">{template.description}</p>
+                        )}
+                        <div className="mt-2 text-xs text-brand-medium">
+                          {template.templateDays?.length || 0} días configurados
+                        </div>
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => {
+                            setSelectedTemplate(template);
+                            setShowTemplateFormModal(true);
+                          }}
+                          className="px-3 py-1 text-sm text-brand-light hover:text-brand-medium"
+                        >
+                          ✏️ Editar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Template Form Modal (Create/Edit) */}
+      {showTemplateFormModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-neutral-mid/20 sticky top-0 bg-white">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">
+                  {selectedTemplate ? 'Editar Plantilla' : 'Nueva Plantilla'}
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowTemplateFormModal(false);
+                    setSelectedTemplate(null);
+                  }}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6">
+              <TemplateForm
+                template={selectedTemplate}
+                onClose={() => {
+                  setShowTemplateFormModal(false);
+                  setSelectedTemplate(null);
+                  fetchTemplates();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Template Form Component with Split Schedule Support and Multiple Breaks
+const TemplateForm = ({ template, onClose }) => {
+  const { user } = useAuth();
+  const [formData, setFormData] = useState({
+    name: template?.name || '',
+    description: template?.description || '',
+    days: template?.templateDays || Array(7).fill(null).map((_, i) => ({
+      dayOfWeek: i,
+      isWorkingDay: false,
+      isSplitSchedule: false,
+      startTime: '09:00',
+      endTime: '18:00',
+      morningStart: '09:00',
+      morningEnd: '14:00',
+      afternoonStart: '16:00',
+      afternoonEnd: '20:00',
+      notes: '',
+      breaks: []
+    }))
+  });
+
+  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+
+  const handleDayChange = (dayIndex, field, value) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex] = { ...newDays[dayIndex], [field]: value };
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const addBreak = (dayIndex) => {
+    const newDays = [...formData.days];
+    const newBreak = {
+      name: 'Pausa',
+      startTime: '12:00',
+      endTime: '12:30',
+      breakType: 'rest',
+      isPaid: true,
+      isRequired: false,
+      sortOrder: newDays[dayIndex].breaks?.length || 0
+    };
+    newDays[dayIndex].breaks = [...(newDays[dayIndex].breaks || []), newBreak];
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const removeBreak = (dayIndex, breakIndex) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex].breaks = newDays[dayIndex].breaks.filter((_, i) => i !== breakIndex);
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const handleBreakChange = (dayIndex, breakIndex, field, value) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex].breaks[breakIndex] = {
+      ...newDays[dayIndex].breaks[breakIndex],
+      [field]: value
+    };
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const copyDayToOthers = (sourceDayIndex) => {
+    const sourceDay = formData.days[sourceDayIndex];
+    const confirmation = confirm(`¿Copiar la configuración de ${dayNames[sourceDayIndex]} a todos los demás días?`);
+    
+    if (confirmation) {
+      const newDays = formData.days.map((day, index) => {
+        if (index === sourceDayIndex) return day;
+        return {
+          ...sourceDay,
+          dayOfWeek: day.dayOfWeek,
+          breaks: sourceDay.breaks.map(b => ({ ...b }))
+        };
+      });
+      setFormData({ ...formData, days: newDays });
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const url = template 
+        ? `${getApiUrl()}/schedule-templates/${template.id}`
+        : `${getApiUrl()}/schedule-templates`;
+      
+      const payload = {
+        ...formData,
+        createdBy: user?.id,
+        templateDays: formData.days
+      };
+      
+      const response = await authenticatedFetch(url, {
+        method: template ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        alert(template ? 'Plantilla actualizada' : 'Plantilla creada');
+        onClose();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.error || 'No se pudo guardar la plantilla'}`);
+      }
+    } catch (error) {
+      console.error('Error saving template:', error);
+      alert('Error al guardar la plantilla');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-neutral-dark mb-2">
+            Nombre de la Plantilla *
+          </label>
+          <input
+            type="text"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+            required
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-neutral-dark mb-2">
+            Descripción
+          </label>
+          <input
+            type="text"
+            value={formData.description}
+            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-neutral-mid/20 pt-4">
+        <h4 className="font-semibold text-neutral-dark mb-4">Configuración por Día</h4>
+        
+        <div className="space-y-4">
+          {formData.days.map((day, index) => (
+            <div key={index} className="border border-neutral-mid/20 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center space-x-2">
+                  <h5 className="font-medium text-neutral-dark">{dayNames[index]}</h5>
+                  {day.isWorkingDay && (
+                    <button
+                      type="button"
+                      onClick={() => copyDayToOthers(index)}
+                      className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100"
+                      title="Copiar este día a todos los demás"
+                    >
+                      📋 Copiar a todos
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={day.isWorkingDay}
+                      onChange={(e) => handleDayChange(index, 'isWorkingDay', e.target.checked)}
+                      className="rounded border-neutral-mid/30"
+                    />
+                    <span className="text-sm text-neutral-dark">Día laboral</span>
+                  </label>
+                  {day.isWorkingDay && (
+                    <label className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        checked={day.isSplitSchedule}
+                        onChange={(e) => handleDayChange(index, 'isSplitSchedule', e.target.checked)}
+                        className="rounded border-neutral-mid/30"
+                      />
+                      <span className="text-sm text-brand-medium">Horario partido</span>
+                    </label>
+                  )}
+                </div>
+              </div>
+
+              {day.isWorkingDay && (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                    {day.isSplitSchedule ? (
+                      <>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Entrada Mañana</label>
+                          <input
+                            type="time"
+                            value={day.morningStart}
+                            onChange={(e) => handleDayChange(index, 'morningStart', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Salida Mañana</label>
+                          <input
+                            type="time"
+                            value={day.morningEnd}
+                            onChange={(e) => handleDayChange(index, 'morningEnd', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Entrada Tarde</label>
+                          <input
+                            type="time"
+                            value={day.afternoonStart}
+                            onChange={(e) => handleDayChange(index, 'afternoonStart', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Salida Tarde</label>
+                          <input
+                            type="time"
+                            value={day.afternoonEnd}
+                            onChange={(e) => handleDayChange(index, 'afternoonEnd', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Entrada</label>
+                          <input
+                            type="time"
+                            value={day.startTime}
+                            onChange={(e) => handleDayChange(index, 'startTime', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">Salida</label>
+                          <input
+                            type="time"
+                            value={day.endTime}
+                            onChange={(e) => handleDayChange(index, 'endTime', e.target.value)}
+                            className="w-full px-2 py-1 text-sm border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Múltiples Pausas */}
+                  <div className="border-t border-neutral-mid/10 pt-3 mt-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <h6 className="text-sm font-medium text-neutral-dark">Pausas</h6>
+                      <button
+                        type="button"
+                        onClick={() => addBreak(index)}
+                        className="text-xs px-2 py-1 bg-brand-light/10 text-brand-light rounded hover:bg-brand-light/20"
+                      >
+                        + Añadir Pausa
+                      </button>
+                    </div>
+
+                    {day.breaks && day.breaks.length > 0 ? (
+                      <div className="space-y-2">
+                        {day.breaks.map((breakItem, breakIndex) => (
+                          <div key={breakIndex} className="bg-neutral-light/50 rounded p-2 border border-neutral-mid/10">
+                            <div className="grid grid-cols-12 gap-2 items-center">
+                              <div className="col-span-3">
+                                <input
+                                  type="text"
+                                  value={breakItem.name}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'name', e.target.value)}
+                                  placeholder="Nombre"
+                                  className="w-full px-2 py-1 text-xs border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="time"
+                                  value={breakItem.startTime}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'startTime', e.target.value)}
+                                  className="w-full px-2 py-1 text-xs border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <input
+                                  type="time"
+                                  value={breakItem.endTime}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'endTime', e.target.value)}
+                                  className="w-full px-2 py-1 text-xs border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                                />
+                              </div>
+                              <div className="col-span-2">
+                                <select
+                                  value={breakItem.breakType}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'breakType', e.target.value)}
+                                  className="w-full px-2 py-1 text-xs border border-neutral-mid/30 rounded focus:border-brand-light focus:ring-0 focus:outline-none"
+                                >
+                                  <option value="rest">Descanso</option>
+                                  <option value="meal">Comida</option>
+                                  <option value="paid">Pagada</option>
+                                  <option value="unpaid">No pagada</option>
+                                  <option value="personal">Personal</option>
+                                  <option value="other">Otra</option>
+                                </select>
+                              </div>
+                              <div className="col-span-2 flex items-center space-x-1">
+                                <label className="flex items-center text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={breakItem.isPaid}
+                                    onChange={(e) => handleBreakChange(index, breakIndex, 'isPaid', e.target.checked)}
+                                    className="mr-1 rounded border-neutral-mid/30"
+                                  />
+                                  Pagada
+                                </label>
+                              </div>
+                              <div className="col-span-1 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => removeBreak(index, breakIndex)}
+                                  className="text-red-600 hover:text-red-800 text-sm"
+                                  title="Eliminar pausa"
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-brand-medium italic">No hay pausas configuradas</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex justify-end space-x-3 pt-4 border-t border-neutral-mid/20">
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-4 py-2 text-brand-medium hover:text-neutral-dark"
+        >
+          Cancelar
+        </button>
+        <button
+          type="submit"
+          className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium"
+        >
+          {template ? 'Actualizar' : 'Crear'} Plantilla
+        </button>
+      </div>
+    </form>
   );
 };
 
