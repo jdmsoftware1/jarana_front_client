@@ -1079,8 +1079,18 @@ const WeeklyViewContent = () => {
 
   const weekDates = getWeekDates(currentWeek);
 
-  // Fetch employees and their schedules
+  // Get ISO week number
+  const getWeekNumber = (date) => {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  };
+
+  // Fetch employees and their weekly schedules
   const fetchData = async () => {
+    setLoading(true);
     try {
       const employeesResponse = await authenticatedFetch(`${getApiUrl()}/employees`);
       
@@ -1088,17 +1098,61 @@ const WeeklyViewContent = () => {
         const employeesData = await employeesResponse.json();
         setEmployees(employeesData);
 
-        // Fetch schedules for each employee
+        // Get current week number and year
+        const weekNumber = getWeekNumber(currentWeek);
+        const year = currentWeek.getFullYear();
+
+        // Fetch weekly schedules for each employee
         const schedulesData = {};
         for (const employee of employeesData) {
           try {
-            const scheduleResponse = await authenticatedFetch(`${getApiUrl()}/schedules/employee/${employee.id}`);
+            // Fetch weekly schedule for this specific week
+            const scheduleResponse = await authenticatedFetch(
+              `${getApiUrl()}/weekly-schedules/employee/${employee.id}/year/${year}`
+            );
+            
             if (scheduleResponse.ok) {
-              const employeeSchedules = await scheduleResponse.json();
-              schedulesData[employee.id] = employeeSchedules.reduce((acc, schedule) => {
-                acc[schedule.dayOfWeek] = schedule;
-                return acc;
-              }, {});
+              const responseData = await scheduleResponse.json();
+              const weeklySchedules = responseData.data || responseData;
+              
+              // Find the schedule for the current week
+              const weekSchedule = weeklySchedules.find(
+                ws => ws.weekNumber === weekNumber && ws.year === year
+              );
+
+              if (weekSchedule && weekSchedule.template) {
+                // Convert template days to schedule format
+                const templateDays = weekSchedule.template.templateDays || [];
+                schedulesData[employee.id] = templateDays.reduce((acc, day) => {
+                  acc[day.dayOfWeek] = {
+                    dayOfWeek: day.dayOfWeek,
+                    isWorkingDay: day.isWorkingDay,
+                    isSplitSchedule: day.isSplitSchedule,
+                    startTime: day.startTime,
+                    endTime: day.endTime,
+                    morningStart: day.morningStart,
+                    morningEnd: day.morningEnd,
+                    afternoonStart: day.afternoonStart,
+                    afternoonEnd: day.afternoonEnd,
+                    breakStartTime: day.breakStartTime,
+                    breakEndTime: day.breakEndTime,
+                    breaks: day.breaks || []
+                  };
+                  return acc;
+                }, {});
+              } else {
+                // No weekly schedule, try to get base schedule
+                const baseScheduleResponse = await authenticatedFetch(
+                  `${getApiUrl()}/schedules/employee/${employee.id}`
+                );
+                if (baseScheduleResponse.ok) {
+                  const employeeSchedules = await baseScheduleResponse.json();
+                  schedulesData[employee.id] = employeeSchedules.reduce((acc, schedule) => {
+                    acc[schedule.dayOfWeek] = schedule;
+                    return acc;
+                  }, {});
+                }
+              }
             }
           } catch (error) {
             console.error(`Error fetching schedules for employee ${employee.id}:`, error);
@@ -1115,7 +1169,7 @@ const WeeklyViewContent = () => {
 
   React.useEffect(() => {
     fetchData();
-  }, []);
+  }, [currentWeek]); // Re-fetch when week changes
 
   const getScheduleForDay = (employeeId, dayOfWeek) => {
     return schedules[employeeId]?.[dayOfWeek] || null;
@@ -1135,7 +1189,8 @@ const WeeklyViewContent = () => {
   const getWeekLabel = () => {
     const start = weekDates[0];
     const end = weekDates[6];
-    return `${start.getDate()}/${start.getMonth() + 1} - ${end.getDate()}/${end.getMonth() + 1}/${end.getFullYear()}`;
+    const weekNum = getWeekNumber(currentWeek);
+    return `Semana ${weekNum} - ${start.getDate()}/${start.getMonth() + 1} - ${end.getDate()}/${end.getMonth() + 1}/${end.getFullYear()}`;
   };
 
   return (
@@ -1210,15 +1265,41 @@ const WeeklyViewContent = () => {
                     const schedule = getScheduleForDay(employee.id, dayOfWeek);
                     
                     return (
-                      <td key={dayIndex} className="px-3 py-4 text-center border-r border-neutral-mid/20 min-w-[120px]">
+                      <td key={dayIndex} className="px-3 py-4 text-center border-r border-neutral-mid/20 min-w-[140px]">
                         {schedule && schedule.isWorkingDay ? (
-                          <div className="text-xs">
-                            <div className="font-medium text-neutral-dark">
-                              {formatTime(schedule.startTime)} - {formatTime(schedule.endTime)}
-                            </div>
-                            {schedule.breakStartTime && schedule.breakEndTime && (
-                              <div className="text-brand-medium mt-1">
-                                Descanso: {formatTime(schedule.breakStartTime)} - {formatTime(schedule.breakEndTime)}
+                          <div className="text-xs space-y-1">
+                            {schedule.isSplitSchedule ? (
+                              <>
+                                <div className="font-medium text-neutral-dark">
+                                  🌅 {formatTime(schedule.morningStart)} - {formatTime(schedule.morningEnd)}
+                                </div>
+                                <div className="font-medium text-neutral-dark">
+                                  🌆 {formatTime(schedule.afternoonStart)} - {formatTime(schedule.afternoonEnd)}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="font-medium text-neutral-dark">
+                                {formatTime(schedule.startTime)} - {formatTime(schedule.endTime)}
+                              </div>
+                            )}
+                            
+                            {/* Show breaks */}
+                            {schedule.breaks && schedule.breaks.length > 0 && (
+                              <div className="text-brand-medium mt-1 space-y-0.5">
+                                {schedule.breaks.map((breakItem, idx) => (
+                                  <div key={idx} className="text-[10px]">
+                                    ☕ {breakItem.name}: {formatTime(breakItem.startTime)}-{formatTime(breakItem.endTime)}
+                                    {breakItem.isPaid && ' 💰'}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            
+                            {/* Fallback to old break format */}
+                            {(!schedule.breaks || schedule.breaks.length === 0) && 
+                             schedule.breakStartTime && schedule.breakEndTime && (
+                              <div className="text-brand-medium mt-1 text-[10px]">
+                                ☕ {formatTime(schedule.breakStartTime)} - {formatTime(schedule.breakEndTime)}
                               </div>
                             )}
                           </div>
@@ -2504,6 +2585,7 @@ const WeeklySchedulesContent = () => {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showTemplateFormModal, setShowTemplateFormModal] = useState(false);
   const [showCopyModal, setShowCopyModal] = useState(false);
+  const [showCustomScheduleModal, setShowCustomScheduleModal] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedEmployeesForCopy, setSelectedEmployeesForCopy] = useState([]);
   const [assignData, setAssignData] = useState({
@@ -2747,14 +2829,22 @@ const WeeklySchedulesContent = () => {
             </select>
           </div>
 
-          <div className="flex items-end">
+          <div className="flex items-end gap-2">
             <button
               onClick={() => setShowAssignModal(true)}
               disabled={!selectedEmployee}
-              className="w-full px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus className="h-5 w-5 inline mr-2" />
               Asignar Plantilla
+            </button>
+            <button
+              onClick={() => setShowCustomScheduleModal(true)}
+              disabled={!selectedEmployee}
+              className="flex-1 px-4 py-2 bg-brand-medium text-brand-cream rounded-lg hover:bg-brand-dark disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Plus className="h-5 w-5 inline mr-2" />
+              Horario Personalizado
             </button>
           </div>
         </div>
@@ -2804,16 +2894,79 @@ const WeeklySchedulesContent = () => {
                       </div>
                       
                       {schedule.template && (
-                        <div className="text-sm text-brand-medium">
-                          <strong>Plantilla:</strong> {schedule.template.name}
-                          {schedule.template.description && (
-                            <span className="ml-2">- {schedule.template.description}</span>
+                        <>
+                          <div className="text-sm text-brand-medium mb-2">
+                            <strong>Plantilla:</strong> {schedule.template.name}
+                            {schedule.template.description && (
+                              <span className="ml-2">- {schedule.template.description}</span>
+                            )}
+                          </div>
+
+                          {/* Schedule Summary */}
+                          {schedule.template.templateDays && schedule.template.templateDays.length > 0 && (
+                            <div className="mt-3 bg-neutral-light/30 rounded-lg p-3 border border-neutral-mid/10">
+                              <div className="text-xs font-semibold text-neutral-dark mb-2">Resumen de Horario:</div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                                {schedule.template.templateDays
+                                  .filter(day => day.isWorkingDay)
+                                  .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
+                                  .map((day, idx) => {
+                                    const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+                                    const dayName = dayNames[day.dayOfWeek];
+                                    
+                                    return (
+                                      <div key={idx} className="flex items-start space-x-2 text-neutral-dark">
+                                        <span className="font-medium min-w-[35px]">{dayName}:</span>
+                                        <div className="flex-1">
+                                          {day.isSplitSchedule ? (
+                                            <div className="space-y-1">
+                                              <div className="flex items-center space-x-1">
+                                                <span className="text-brand-medium">🌅</span>
+                                                <span>{day.morningStart} - {day.morningEnd}</span>
+                                              </div>
+                                              <div className="flex items-center space-x-1">
+                                                <span className="text-brand-medium">🌆</span>
+                                                <span>{day.afternoonStart} - {day.afternoonEnd}</span>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <span>{day.startTime} - {day.endTime}</span>
+                                          )}
+                                          
+                                          {day.breaks && day.breaks.length > 0 && (
+                                            <div className="mt-1 text-[10px] text-brand-medium/80 space-y-0.5">
+                                              {day.breaks.map((breakItem, bIdx) => (
+                                                <div key={bIdx} className="flex items-center space-x-1">
+                                                  <span>☕</span>
+                                                  <span>{breakItem.name}: {breakItem.startTime}-{breakItem.endTime}</span>
+                                                  {breakItem.isPaid && <span className="text-green-600">💰</span>}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                              
+                              {schedule.template.templateDays.filter(d => !d.isWorkingDay).length > 0 && (
+                                <div className="mt-2 text-[10px] text-neutral-dark/60">
+                                  <strong>Días no laborales:</strong> {
+                                    schedule.template.templateDays
+                                      .filter(d => !d.isWorkingDay)
+                                      .map(d => ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][d.dayOfWeek])
+                                      .join(', ')
+                                  }
+                                </div>
+                              )}
+                            </div>
                           )}
-                        </div>
+                        </>
                       )}
 
                       {schedule.notes && (
-                        <div className="text-sm text-brand-medium mt-1">
+                        <div className="text-sm text-brand-medium mt-2">
                           <strong>Notas:</strong> {schedule.notes}
                         </div>
                       )}
@@ -3148,6 +3301,67 @@ const WeeklySchedulesContent = () => {
         </div>
       )}
 
+      {/* Custom Schedule Modal */}
+      {showCustomScheduleModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-neutral-mid/20 sticky top-0 bg-white">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-semibold text-neutral-dark">
+                  Crear Horario Personalizado - {employees.find(e => e.id === selectedEmployee)?.name}
+                </h3>
+                <button
+                  onClick={() => setShowCustomScheduleModal(false)}
+                  className="text-brand-medium hover:text-neutral-dark"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="text-sm text-brand-medium mt-2">
+                Configura un horario personalizado para la semana seleccionada
+              </p>
+            </div>
+
+            <div className="p-6">
+              <div className="mb-4 grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">
+                    Año
+                  </label>
+                  <input
+                    type="number"
+                    value={selectedYear}
+                    readOnly
+                    className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg bg-neutral-light/30"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">
+                    Número de Semana
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="53"
+                    value={assignData.weekNumber}
+                    onChange={(e) => setAssignData({ ...assignData, weekNumber: parseInt(e.target.value) })}
+                    className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <CustomScheduleForm
+                employeeId={selectedEmployee}
+                year={selectedYear}
+                weekNumber={assignData.weekNumber}
+                onClose={() => setShowCustomScheduleModal(false)}
+                onSuccess={fetchWeeklySchedules}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Template Management Modal */}
       {showTemplateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -3322,7 +3536,7 @@ const TemplateForm = ({ template, onClose }) => {
         return {
           ...sourceDay,
           dayOfWeek: day.dayOfWeek,
-          breaks: sourceDay.breaks.map(b => ({ ...b }))
+          breaks: sourceDay.breaks ? sourceDay.breaks.map(b => ({ ...b })) : []
         };
       });
       setFormData({ ...formData, days: newDays });
@@ -3607,6 +3821,361 @@ const TemplateForm = ({ template, onClose }) => {
           className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium"
         >
           {template ? 'Actualizar' : 'Crear'} Plantilla
+        </button>
+      </div>
+    </form>
+  );
+};
+
+// Custom Schedule Form Component (reuses TemplateForm logic but saves as weekly schedule)
+const CustomScheduleForm = ({ employeeId, year, weekNumber, onClose, onSuccess }) => {
+  const { user } = useAuth();
+  const [formData, setFormData] = useState({
+    days: Array(7).fill(null).map((_, i) => ({
+      dayOfWeek: i,
+      isWorkingDay: false,
+      isSplitSchedule: false,
+      startTime: '09:00',
+      endTime: '18:00',
+      morningStart: '09:00',
+      morningEnd: '14:00',
+      afternoonStart: '16:00',
+      afternoonEnd: '20:00',
+      notes: '',
+      breaks: []
+    }))
+  });
+
+  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+
+  const handleDayChange = (dayIndex, field, value) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex] = { ...newDays[dayIndex], [field]: value };
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const addBreak = (dayIndex) => {
+    const newDays = [...formData.days];
+    const newBreak = {
+      name: 'Pausa',
+      startTime: '12:00',
+      endTime: '12:30',
+      breakType: 'rest',
+      isPaid: true,
+      isRequired: false,
+      sortOrder: newDays[dayIndex].breaks?.length || 0
+    };
+    newDays[dayIndex].breaks = [...(newDays[dayIndex].breaks || []), newBreak];
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const removeBreak = (dayIndex, breakIndex) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex].breaks = newDays[dayIndex].breaks.filter((_, i) => i !== breakIndex);
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const handleBreakChange = (dayIndex, breakIndex, field, value) => {
+    const newDays = [...formData.days];
+    newDays[dayIndex].breaks[breakIndex] = {
+      ...newDays[dayIndex].breaks[breakIndex],
+      [field]: value
+    };
+    setFormData({ ...formData, days: newDays });
+  };
+
+  const copyDayToOthers = (sourceDayIndex) => {
+    const sourceDay = formData.days[sourceDayIndex];
+    const confirmation = confirm(`¿Copiar la configuración de ${dayNames[sourceDayIndex]} a todos los demás días?`);
+    
+    if (confirmation) {
+      const newDays = formData.days.map((day, index) => {
+        if (index === sourceDayIndex) return day;
+        return {
+          ...sourceDay,
+          dayOfWeek: day.dayOfWeek,
+          breaks: sourceDay.breaks ? sourceDay.breaks.map(b => ({ ...b })) : []
+        };
+      });
+      setFormData({ ...formData, days: newDays });
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    try {
+      // First create a temporary template with the custom schedule
+      const templatePayload = {
+        name: `Horario Personalizado - Semana ${weekNumber}/${year}`,
+        description: `Horario personalizado creado automáticamente`,
+        createdBy: user?.id,
+        templateDays: formData.days
+      };
+      
+      const templateResponse = await authenticatedFetch(`${getApiUrl()}/schedule-templates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(templatePayload)
+      });
+
+      if (!templateResponse.ok) {
+        throw new Error('Error al crear plantilla temporal');
+      }
+
+      const templateData = await templateResponse.json();
+      const templateId = templateData.data.id;
+
+      // Now assign this template to the weekly schedule
+      const scheduleResponse = await authenticatedFetch(`${getApiUrl()}/weekly-schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          employeeId,
+          templateId,
+          year,
+          weekNumber,
+          notes: `Horario personalizado`
+        })
+      });
+
+      if (scheduleResponse.ok) {
+        alert('Horario personalizado creado correctamente');
+        onSuccess();
+        onClose();
+      } else {
+        throw new Error('Error al asignar horario');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Error al crear horario personalizado');
+    }
+  };
+
+  const breakTypes = [
+    { value: 'meal', label: 'Comida' },
+    { value: 'rest', label: 'Descanso' },
+    { value: 'coffee', label: 'Café' },
+    { value: 'smoke', label: 'Fumar' },
+    { value: 'prayer', label: 'Oración' },
+    { value: 'other', label: 'Otro' }
+  ];
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="max-h-[60vh] overflow-y-auto pr-2">
+        <div className="space-y-4">
+          {formData.days.map((day, index) => (
+            <div key={index} className="border border-neutral-mid/30 rounded-lg p-4 bg-neutral-light/30">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-semibold text-neutral-dark">{dayNames[index]}</h4>
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center space-x-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={day.isWorkingDay}
+                      onChange={(e) => handleDayChange(index, 'isWorkingDay', e.target.checked)}
+                      className="rounded border-neutral-mid/30"
+                    />
+                    <span>Día laboral</span>
+                  </label>
+                  {day.isWorkingDay && (
+                    <>
+                      <label className="flex items-center space-x-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={day.isSplitSchedule}
+                          onChange={(e) => handleDayChange(index, 'isSplitSchedule', e.target.checked)}
+                          className="rounded border-neutral-mid/30"
+                        />
+                        <span>Horario partido</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => copyDayToOthers(index)}
+                        className="text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100"
+                        title="Copiar este día a todos los demás"
+                      >
+                        📋 Copiar a todos
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {day.isWorkingDay && (
+                <>
+                  {!day.isSplitSchedule ? (
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div>
+                        <label className="block text-xs text-brand-medium mb-1">Hora entrada</label>
+                        <input
+                          type="time"
+                          value={day.startTime}
+                          onChange={(e) => handleDayChange(index, 'startTime', e.target.value)}
+                          className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-brand-medium mb-1">Hora salida</label>
+                        <input
+                          type="time"
+                          value={day.endTime}
+                          onChange={(e) => handleDayChange(index, 'endTime', e.target.value)}
+                          className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">🌅 Mañana - Entrada</label>
+                          <input
+                            type="time"
+                            value={day.morningStart}
+                            onChange={(e) => handleDayChange(index, 'morningStart', e.target.value)}
+                            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">🌅 Mañana - Salida</label>
+                          <input
+                            type="time"
+                            value={day.morningEnd}
+                            onChange={(e) => handleDayChange(index, 'morningEnd', e.target.value)}
+                            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">🌆 Tarde - Entrada</label>
+                          <input
+                            type="time"
+                            value={day.afternoonStart}
+                            onChange={(e) => handleDayChange(index, 'afternoonStart', e.target.value)}
+                            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-brand-medium mb-1">🌆 Tarde - Salida</label>
+                          <input
+                            type="time"
+                            value={day.afternoonEnd}
+                            onChange={(e) => handleDayChange(index, 'afternoonEnd', e.target.value)}
+                            className="w-full px-3 py-2 border border-neutral-mid/30 rounded-lg text-sm"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs text-brand-medium font-semibold">Pausas</label>
+                      <button
+                        type="button"
+                        onClick={() => addBreak(index)}
+                        className="text-xs px-2 py-1 bg-green-50 text-green-600 rounded hover:bg-green-100"
+                      >
+                        + Añadir Pausa
+                      </button>
+                    </div>
+                    {day.breaks && day.breaks.length > 0 ? (
+                      <div className="space-y-2">
+                        {day.breaks.map((breakItem, breakIndex) => (
+                          <div key={breakIndex} className="bg-white p-3 rounded border border-neutral-mid/20">
+                            <div className="grid grid-cols-6 gap-2 items-end">
+                              <div className="col-span-2">
+                                <label className="block text-xs text-brand-medium mb-1">Nombre</label>
+                                <input
+                                  type="text"
+                                  value={breakItem.name}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'name', e.target.value)}
+                                  className="w-full px-2 py-1 border border-neutral-mid/30 rounded text-sm"
+                                  placeholder="Ej: Café"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-brand-medium mb-1">Inicio</label>
+                                <input
+                                  type="time"
+                                  value={breakItem.startTime}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'startTime', e.target.value)}
+                                  className="w-full px-2 py-1 border border-neutral-mid/30 rounded text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-brand-medium mb-1">Fin</label>
+                                <input
+                                  type="time"
+                                  value={breakItem.endTime}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'endTime', e.target.value)}
+                                  className="w-full px-2 py-1 border border-neutral-mid/30 rounded text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-brand-medium mb-1">Tipo</label>
+                                <select
+                                  value={breakItem.breakType}
+                                  onChange={(e) => handleBreakChange(index, breakIndex, 'breakType', e.target.value)}
+                                  className="w-full px-2 py-1 border border-neutral-mid/30 rounded text-sm"
+                                >
+                                  {breakTypes.map(type => (
+                                    <option key={type.value} value={type.value}>{type.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <label className="flex items-center space-x-1 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={breakItem.isPaid}
+                                    onChange={(e) => handleBreakChange(index, breakIndex, 'isPaid', e.target.checked)}
+                                    className="rounded border-neutral-mid/30"
+                                  />
+                                  Pagada
+                                </label>
+                              </div>
+                              <div className="col-span-1 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => removeBreak(index, breakIndex)}
+                                  className="text-red-600 hover:text-red-800 text-sm"
+                                  title="Eliminar pausa"
+                                >
+                                  🗑️
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-brand-medium italic">No hay pausas configuradas</p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex justify-end space-x-3 pt-4 border-t border-neutral-mid/20">
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-4 py-2 text-brand-medium hover:text-neutral-dark"
+        >
+          Cancelar
+        </button>
+        <button
+          type="submit"
+          className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium"
+        >
+          Crear Horario Personalizado
         </button>
       </div>
     </form>

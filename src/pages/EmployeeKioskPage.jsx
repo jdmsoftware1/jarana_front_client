@@ -6,7 +6,11 @@ import { useSystem } from '../contexts/SystemContext';
 import Footer from '../components/Footer';
 
 // Helper function for API URL
-const getApiUrl = () => import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+const getApiUrl = () => {
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+  // Ensure it doesn't end with a slash
+  return apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl;
+};
 
 const EmployeeKioskPage = () => {
   const { systemActive, supervisor } = useSystem();
@@ -54,7 +58,7 @@ const EmployeeKioskPage = () => {
 
     try {
       // Autenticar empleado
-      const authResponse = await fetch(`${getApiUrl()}/kiosk/auth`, {
+      const authResponse = await fetch(`${getApiUrl()}/api/kiosk/auth`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ employeeCode, totpCode })
@@ -73,7 +77,7 @@ const EmployeeKioskPage = () => {
       const action = authData.employee.isCheckedIn ? 'checkout' : 'checkin';
       
       // Realizar fichaje automático
-      const fichajeResponse = await fetch(`${getApiUrl()}/kiosk/${action}`, {
+      const fichajeResponse = await fetch(`${getApiUrl()}/api/kiosk/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ employeeId: authData.employee.id })
