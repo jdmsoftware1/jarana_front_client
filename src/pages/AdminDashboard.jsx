@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSystem } from '../contexts/SystemContext';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
 import { 
   Users, 
   Clock, 
@@ -16,7 +18,8 @@ import {
   Shield,
   Filter,
   Download,
-  Brain
+  Brain,
+  LogIn
 } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Footer from '../components/Footer';
@@ -642,16 +645,41 @@ const EmployeesContent = () => {
 // Records Content
 const RecordsContent = () => {
   const [records, setRecords] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedEmployee, setSelectedEmployee] = useState('all');
+  const [filter, setFilter] = useState('all'); // all, today, week, month
+  const [viewMode, setViewMode] = useState('grouped'); // grouped, list
+  const [page, setPage] = useState(1);
+  const recordsPerPage = 10;
+
+  // Cargar empleados
+  const fetchEmployees = async () => {
+    try {
+      const response = await authenticatedFetch(`${getApiUrl()}/employees`);
+      if (response.ok) {
+        const data = await response.json();
+        setEmployees(data);
+      }
+    } catch (error) {
+      console.error('Error fetching employees:', error);
+    }
+  };
 
   // Cargar registros
   const fetchRecords = async () => {
+    setLoading(true);
     try {
-      const response = await authenticatedFetch(`${getApiUrl()}/records/all`);
+      const url = selectedEmployee === 'all' 
+        ? `${getApiUrl()}/records/all`
+        : `${getApiUrl()}/records/employee/${selectedEmployee}`;
+      
+      const response = await authenticatedFetch(url);
       
       if (response.ok) {
         const data = await response.json();
-        setRecords(data.records || []);
+        const allRecords = data.records || data || [];
+        setRecords(filterRecordsByDate(allRecords));
       }
     } catch (error) {
       console.error('Error fetching records:', error);
@@ -661,8 +689,31 @@ const RecordsContent = () => {
   };
 
   React.useEffect(() => {
-    fetchRecords();
+    fetchEmployees();
   }, []);
+
+  React.useEffect(() => {
+    fetchRecords();
+  }, [selectedEmployee, filter]);
+
+  const filterRecordsByDate = (data) => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - today.getDay());
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    switch (filter) {
+      case 'today':
+        return data.filter(record => new Date(record.timestamp) >= today);
+      case 'week':
+        return data.filter(record => new Date(record.timestamp) >= weekStart);
+      case 'month':
+        return data.filter(record => new Date(record.timestamp) >= monthStart);
+      default:
+        return data;
+    }
+  };
 
   const formatDate = (timestamp) => {
     return new Date(timestamp).toLocaleString('es-ES', {
@@ -674,89 +725,344 @@ const RecordsContent = () => {
     });
   };
 
+  const formatTime = (timestamp) => {
+    return format(new Date(timestamp), 'HH:mm');
+  };
+
+  // Group records by day
+  const groupRecordsByDay = (records) => {
+    const grouped = {};
+    
+    records.forEach(record => {
+      const date = format(new Date(record.timestamp), 'yyyy-MM-dd');
+      if (!grouped[date]) {
+        grouped[date] = [];
+      }
+      grouped[date].push(record);
+    });
+
+    // Sort records within each day
+    Object.keys(grouped).forEach(date => {
+      grouped[date].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    });
+
+    return grouped;
+  };
+
+  const calculateWorkHours = (dayRecords) => {
+    const checkins = dayRecords.filter(r => r.type === 'checkin');
+    const checkouts = dayRecords.filter(r => r.type === 'checkout');
+    
+    let totalMinutes = 0;
+    const pairs = Math.min(checkins.length, checkouts.length);
+    
+    for (let i = 0; i < pairs; i++) {
+      const start = new Date(checkins[i].timestamp);
+      const end = new Date(checkouts[i].timestamp);
+      totalMinutes += (end - start) / (1000 * 60);
+    }
+    
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = Math.floor(totalMinutes % 60);
+    return `${hours}h ${minutes}m`;
+  };
+
+  const groupedRecords = groupRecordsByDay(records);
+  const sortedDates = Object.keys(groupedRecords).sort((a, b) => new Date(b) - new Date(a));
+
+  // Pagination
+  const totalPages = viewMode === 'grouped' 
+    ? Math.ceil(sortedDates.length / recordsPerPage)
+    : Math.ceil(records.length / recordsPerPage);
+  const startIndex = (page - 1) * recordsPerPage;
+  const paginatedRecords = records.slice(startIndex, startIndex + recordsPerPage);
+  const paginatedDates = sortedDates.slice(startIndex, startIndex + recordsPerPage);
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-12">
+        <LoadingSpinner />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      {/* Header and Filters */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold text-neutral-dark font-serif">
           Registros de Fichajes
         </h2>
-        <div className="flex space-x-3">
-          <button className="inline-flex items-center px-4 py-2 border border-neutral-mid/30 text-neutral-dark rounded-lg hover:bg-neutral-light transition-colors">
-            <Filter className="h-4 w-4 mr-2" />
-            Filtrar
-          </button>
-          <button className="inline-flex items-center px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium transition-colors">
-            <Download className="h-4 w-4 mr-2" />
-            Exportar
+        
+        <div className="flex items-center space-x-3 flex-wrap gap-2">
+          <select
+            value={selectedEmployee}
+            onChange={(e) => {
+              setSelectedEmployee(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          >
+            <option value="all">Todos los empleados</option>
+            {employees.map(emp => (
+              <option key={emp.id} value={emp.id}>
+                {emp.name} ({emp.employeeCode})
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={viewMode}
+            onChange={(e) => {
+              setViewMode(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          >
+            <option value="grouped">Vista Resumen</option>
+            <option value="list">Vista Lista</option>
+          </select>
+
+          <select
+            value={filter}
+            onChange={(e) => {
+              setFilter(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          >
+            <option value="all">Todos los registros</option>
+            <option value="today">Hoy</option>
+            <option value="week">Esta semana</option>
+            <option value="month">Este mes</option>
+          </select>
+          
+          <button
+            onClick={fetchRecords}
+            className="px-4 py-2 bg-brand-light text-brand-cream rounded-lg hover:bg-brand-medium transition-colors"
+          >
+            <Download className="h-4 w-4 mr-2 inline" />
+            Actualizar
           </button>
         </div>
       </div>
 
-      {/* Records Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
-        <table className="min-w-full divide-y divide-neutral-mid/20">
-          <thead className="bg-neutral-light">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-neutral-dark uppercase tracking-wider">
-                Empleado
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-neutral-dark uppercase tracking-wider">
-                Tipo
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-neutral-dark uppercase tracking-wider">
-                Fecha y Hora
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-neutral-dark uppercase tracking-wider">
-                Duración
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-neutral-dark uppercase tracking-wider">
-                Notas
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-neutral-mid/20">
-            {loading ? (
-              <tr>
-                <td colSpan="5" className="px-6 py-4 text-center">
-                  <div className="flex justify-center">
-                    <LoadingSpinner />
+      {/* Records Display */}
+      {records.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-12 text-center">
+          <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <p className="text-gray-500">No hay registros para el período seleccionado</p>
+        </div>
+      ) : viewMode === 'grouped' ? (
+        /* Grouped View by Day */
+        <div className="space-y-4">
+          {paginatedDates.map(date => {
+            const dayRecords = groupedRecords[date];
+            const checkins = dayRecords.filter(r => r.type === 'checkin');
+            const checkouts = dayRecords.filter(r => r.type === 'checkout');
+            
+            return (
+              <div key={date} className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
+                {/* Day Header */}
+                <div className="bg-gradient-to-r from-brand-light to-brand-medium px-6 py-4">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="text-lg font-semibold text-brand-cream">
+                        {format(new Date(date), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                      </h3>
+                      <p className="text-sm text-brand-cream/80 mt-1">
+                        {checkins.length} entrada(s) • {checkouts.length} salida(s)
+                        {selectedEmployee !== 'all' && ` • ${calculateWorkHours(dayRecords)}`}
+                      </p>
+                    </div>
+                    {selectedEmployee !== 'all' && (
+                      <div className="text-right">
+                        <div className="text-sm text-brand-cream/80">Horas trabajadas</div>
+                        <div className="text-2xl font-bold text-brand-cream">
+                          {calculateWorkHours(dayRecords)}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </td>
-              </tr>
-            ) : records.length === 0 ? (
-              <tr>
-                <td colSpan="5" className="px-6 py-4 text-center text-brand-medium">
-                  No hay registros de fichajes
-                </td>
-              </tr>
-            ) : (
-              records.map((record) => (
-                <tr key={record.id} className="hover:bg-neutral-light/50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                    {record.employee ? `${record.employee.name} (${record.employee.employeeCode})` : 'Empleado desconocido'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      record.type === 'checkin' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                    }`}>
-                      {record.type === 'checkin' ? 'Entrada' : 'Salida'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                    {formatDate(record.timestamp)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-brand-medium">
-                    -
-                  </td>
-                  <td className="px-6 py-4 text-sm text-neutral-dark">
-                    {record.notes || '-'}
-                  </td>
+                </div>
+
+                {/* Day Timeline */}
+                <div className="p-6">
+                  <div className="space-y-3">
+                    {dayRecords.map((record, idx) => {
+                      const time = formatTime(record.timestamp);
+                      const isCheckin = record.type === 'checkin';
+                      
+                      return (
+                        <div key={record.id} className="flex items-start space-x-4">
+                          {/* Timeline indicator */}
+                          <div className="flex flex-col items-center">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                              isCheckin ? 'bg-green-100' : 'bg-red-100'
+                            }`}>
+                              {isCheckin ? (
+                                <LogIn className="h-5 w-5 text-green-600" />
+                              ) : (
+                                <LogOut className="h-5 w-5 text-red-600" />
+                              )}
+                            </div>
+                            {idx < dayRecords.length - 1 && (
+                              <div className="w-0.5 h-8 bg-gray-200 my-1"></div>
+                            )}
+                          </div>
+
+                          {/* Record details */}
+                          <div className="flex-1 pb-4">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <div className="flex items-center gap-3">
+                                <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                                  isCheckin ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                                }`}>
+                                  {isCheckin ? '🟢 Entrada' : '🔴 Salida'}
+                                </span>
+                                <span className="text-2xl font-bold text-neutral-dark">
+                                  {time}
+                                </span>
+                                {selectedEmployee === 'all' && record.employee && (
+                                  <span className="text-sm text-gray-600">
+                                    {record.employee.name} ({record.employee.employeeCode})
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-right text-sm text-gray-500">
+                                {record.device || 'Kiosk Web'}
+                              </div>
+                            </div>
+                            {record.notes && (
+                              <div className="mt-2 text-sm text-gray-600 bg-gray-50 rounded-lg p-2">
+                                💬 {record.notes}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* List View (Table) */
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  {selectedEmployee === 'all' && (
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Empleado
+                    </th>
+                  )}
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Fecha y Hora
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Tipo
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Dispositivo
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Notas
+                  </th>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {paginatedRecords.map((record) => (
+                  <tr key={record.id} className="hover:bg-gray-50">
+                    {selectedEmployee === 'all' && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {record.employee ? `${record.employee.name} (${record.employee.employeeCode})` : 'Desconocido'}
+                      </td>
+                    )}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm font-medium text-gray-900">
+                        {formatDate(record.timestamp)}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                        record.type === 'checkin' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                      }`}>
+                        {record.type === 'checkin' ? 'Entrada' : 'Salida'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {record.device || 'Kiosk Web'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-500">
+                      {record.notes || '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination for List View */}
+          {totalPages > 1 && (
+            <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <div className="text-sm text-gray-700">
+                Mostrando {startIndex + 1} a {Math.min(startIndex + recordsPerPage, records.length)} de {records.length} registros
+              </div>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setPage(page - 1)}
+                  disabled={page === 1}
+                  className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1 text-sm bg-brand-light text-brand-cream rounded-md">
+                  {page} de {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage(page + 1)}
+                  disabled={page === totalPages}
+                  className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pagination for Grouped View */}
+      {viewMode === 'grouped' && totalPages > 1 && (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 px-6 py-3 flex items-center justify-between">
+          <div className="text-sm text-gray-700">
+            Mostrando {startIndex + 1} a {Math.min(startIndex + recordsPerPage, sortedDates.length)} de {sortedDates.length} días
+          </div>
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setPage(page - 1)}
+              disabled={page === 1}
+              className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Anterior
+            </button>
+            <span className="px-3 py-1 text-sm bg-brand-light text-brand-cream rounded-md">
+              {page} de {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(page + 1)}
+              disabled={page === totalPages}
+              className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Siguiente
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -493,6 +493,7 @@ const RecordsContent = ({ employee }) => {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all'); // all, today, week, month
+  const [viewMode, setViewMode] = useState('grouped'); // grouped, list
   const [page, setPage] = useState(1);
   const recordsPerPage = 10;
 
@@ -558,10 +559,54 @@ const RecordsContent = ({ employee }) => {
     return type === 'checkin' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800';
   };
 
+  // Group records by day
+  const groupRecordsByDay = (records) => {
+    const grouped = {};
+    
+    records.forEach(record => {
+      const date = format(new Date(record.timestamp), 'yyyy-MM-dd');
+      if (!grouped[date]) {
+        grouped[date] = [];
+      }
+      grouped[date].push(record);
+    });
+
+    // Sort records within each day
+    Object.keys(grouped).forEach(date => {
+      grouped[date].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    });
+
+    return grouped;
+  };
+
+  const calculateWorkHours = (dayRecords) => {
+    const checkins = dayRecords.filter(r => r.type === 'checkin');
+    const checkouts = dayRecords.filter(r => r.type === 'checkout');
+    
+    let totalMinutes = 0;
+    const pairs = Math.min(checkins.length, checkouts.length);
+    
+    for (let i = 0; i < pairs; i++) {
+      const start = new Date(checkins[i].timestamp);
+      const end = new Date(checkouts[i].timestamp);
+      totalMinutes += (end - start) / (1000 * 60);
+    }
+    
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = Math.floor(totalMinutes % 60);
+    return `${hours}h ${minutes}m`;
+  };
+
+  const groupedRecords = groupRecordsByDay(records);
+  const sortedDates = Object.keys(groupedRecords).sort((a, b) => new Date(b) - new Date(a));
+
   // Pagination
-  const totalPages = Math.ceil(records.length / recordsPerPage);
+  const totalPages = viewMode === 'grouped' 
+    ? Math.ceil(sortedDates.length / recordsPerPage)
+    : Math.ceil(records.length / recordsPerPage);
   const startIndex = (page - 1) * recordsPerPage;
   const paginatedRecords = records.slice(startIndex, startIndex + recordsPerPage);
+  const paginatedDates = sortedDates.slice(startIndex, startIndex + recordsPerPage);
 
   if (loading) {
     return (
@@ -577,7 +622,19 @@ const RecordsContent = ({ employee }) => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold text-neutral-dark">Mis Fichajes</h2>
         
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-4 flex-wrap">
+          <select
+            value={viewMode}
+            onChange={(e) => {
+              setViewMode(e.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border border-neutral-mid/30 rounded-lg focus:border-brand-light focus:ring-0 focus:outline-none"
+          >
+            <option value="grouped">Vista Resumen</option>
+            <option value="list">Vista Lista</option>
+          </select>
+
           <select
             value={filter}
             onChange={(e) => {
@@ -602,91 +659,205 @@ const RecordsContent = ({ employee }) => {
         </div>
       </div>
 
-      {/* Records Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
-        {records.length === 0 ? (
-          <div className="text-center py-12">
-            <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-500">No hay registros para el período seleccionado</p>
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Fecha y Hora
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Tipo
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Dispositivo
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Notas
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {paginatedRecords.map((record) => (
-                    <tr key={record.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">
-                          {formatDateTime(record.timestamp)}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          {getTypeIcon(record.type)}
-                          <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getTypeColor(record.type)}`}>
-                            {getTypeText(record.type)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {record.device || 'Kiosk Web'}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-500">
-                        {record.notes || '-'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
-                <div className="text-sm text-gray-700">
-                  Mostrando {startIndex + 1} a {Math.min(startIndex + recordsPerPage, records.length)} de {records.length} registros
+      {/* Records Display */}
+      {records.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 p-12 text-center">
+          <Clock className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <p className="text-gray-500">No hay registros para el período seleccionado</p>
+        </div>
+      ) : viewMode === 'grouped' ? (
+        /* Grouped View by Day */
+        <div className="space-y-4">
+          {paginatedDates.map(date => {
+            const dayRecords = groupedRecords[date];
+            const checkins = dayRecords.filter(r => r.type === 'checkin');
+            const checkouts = dayRecords.filter(r => r.type === 'checkout');
+            
+            return (
+              <div key={date} className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
+                {/* Day Header */}
+                <div className="bg-gradient-to-r from-brand-light to-brand-medium px-6 py-4">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="text-lg font-semibold text-brand-cream">
+                        {format(new Date(date), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                      </h3>
+                      <p className="text-sm text-brand-cream/80 mt-1">
+                        {checkins.length} entrada(s) • {checkouts.length} salida(s)
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm text-brand-cream/80">Horas trabajadas</div>
+                      <div className="text-2xl font-bold text-brand-cream">
+                        {calculateWorkHours(dayRecords)}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => setPage(page - 1)}
-                    disabled={page === 1}
-                    className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Anterior
-                  </button>
-                  <span className="px-3 py-1 text-sm bg-brand-light text-brand-cream rounded-md">
-                    {page} de {totalPages}
-                  </span>
-                  <button
-                    onClick={() => setPage(page + 1)}
-                    disabled={page === totalPages}
-                    className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Siguiente
-                  </button>
+
+                {/* Day Timeline */}
+                <div className="p-6">
+                  <div className="space-y-3">
+                    {dayRecords.map((record, idx) => {
+                      const time = format(new Date(record.timestamp), 'HH:mm');
+                      const isCheckin = record.type === 'checkin';
+                      
+                      return (
+                        <div key={record.id} className="flex items-start space-x-4">
+                          {/* Timeline indicator */}
+                          <div className="flex flex-col items-center">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                              isCheckin ? 'bg-green-100' : 'bg-red-100'
+                            }`}>
+                              {isCheckin ? (
+                                <LogIn className="h-5 w-5 text-green-600" />
+                              ) : (
+                                <LogOut className="h-5 w-5 text-red-600" />
+                              )}
+                            </div>
+                            {idx < dayRecords.length - 1 && (
+                              <div className="w-0.5 h-8 bg-gray-200 my-1"></div>
+                            )}
+                          </div>
+
+                          {/* Record details */}
+                          <div className="flex-1 pb-4">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                                  isCheckin ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                                }`}>
+                                  {isCheckin ? '🟢 Entrada' : '🔴 Salida'}
+                                </span>
+                                <span className="ml-3 text-2xl font-bold text-neutral-dark">
+                                  {time}
+                                </span>
+                              </div>
+                              <div className="text-right text-sm text-gray-500">
+                                {record.device || 'Kiosk Web'}
+                              </div>
+                            </div>
+                            {record.notes && (
+                              <div className="mt-2 text-sm text-gray-600 bg-gray-50 rounded-lg p-2">
+                                💬 {record.notes}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            )}
-          </>
-        )}
-      </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* List View (Original Table) */
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Fecha y Hora
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Tipo
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Dispositivo
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Notas
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {paginatedRecords.map((record) => (
+                  <tr key={record.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm font-medium text-gray-900">
+                        {formatDateTime(record.timestamp)}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        {getTypeIcon(record.type)}
+                        <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getTypeColor(record.type)}`}>
+                          {getTypeText(record.type)}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {record.device || 'Kiosk Web'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-500">
+                      {record.notes || '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination for List View */}
+          {totalPages > 1 && (
+            <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <div className="text-sm text-gray-700">
+                Mostrando {startIndex + 1} a {Math.min(startIndex + recordsPerPage, records.length)} de {records.length} registros
+              </div>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setPage(page - 1)}
+                  disabled={page === 1}
+                  className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Anterior
+                </button>
+                <span className="px-3 py-1 text-sm bg-brand-light text-brand-cream rounded-md">
+                  {page} de {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage(page + 1)}
+                  disabled={page === totalPages}
+                  className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pagination for Grouped View */}
+      {viewMode === 'grouped' && totalPages > 1 && (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-mid/20 px-6 py-3 flex items-center justify-between">
+          <div className="text-sm text-gray-700">
+            Mostrando {startIndex + 1} a {Math.min(startIndex + recordsPerPage, sortedDates.length)} de {sortedDates.length} días
+          </div>
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setPage(page - 1)}
+              disabled={page === 1}
+              className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Anterior
+            </button>
+            <span className="px-3 py-1 text-sm bg-brand-light text-brand-cream rounded-md">
+              {page} de {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(page + 1)}
+              disabled={page === totalPages}
+              className="px-3 py-1 text-sm bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Siguiente
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
